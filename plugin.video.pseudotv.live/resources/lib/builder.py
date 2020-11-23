@@ -63,7 +63,7 @@ class Builder:
         return log('%s: %s'%(self.__class__.__name__,msg),level)
     
 
-    def buildService(self, channels=None, update=False):
+    def buildService(self, channels=None):
         if isBusy(): return
         elif self.channels.isClient:
             self.log('buildService, Client mode enabled; returning!')
@@ -72,17 +72,17 @@ class Builder:
             self.log('buildService, initializing m3u/xmltv parser failed!')
             return False
             
-        self.log('buildService, channels = %s, update = %s'%(len(channels),update))
         if channels is None: 
             channels = self.getChannelList()
-            
+        self.log('buildService, channels = %s'%(len(channels)))
+        
         if not channels:
             notificationDialog(LANGUAGE(30056))
             return False
 
         setBusy(True)
-        msg = LANGUAGE(30051 if update else 30050)
-        self.dialog = ProgressBGDialog(message=LANGUAGE(30052)%('...'))
+        # msg = LANGUAGE(30051)(30050)
+        self.dialog = ProgressBGDialog()
         
         self.channelCount = len(channels)
         if getProperty('PseudoTVRunning') != 'True': # legacy setting to disable/enable support in third-party applications. 
@@ -92,12 +92,12 @@ class Builder:
             channel       = self.runActions(RULES_ACTION_START, channel, channel)
             self.chanName = channel['name']
             self.progress = (idx*100//len(channels))
-            self.dialog   = ProgressBGDialog(self.progress, self.dialog, message=self.chanName)
             cacheResponse = self.getFileList(channel, channel['radio'])
             cacheResponse = self.runActions(RULES_ACTION_STOP, channel, cacheResponse)
             if cacheResponse: # {True:'Valid Channel (exceed MAX_DAYS)',False:'In-Valid Channel (No guidedata)',list:'fileList (guidedata)'}
                 self.writer.addChannel(channel, radio=channel['radio'], catchup=not bool(channel['radio']))
                 if isinstance(cacheResponse,list) and len(cacheResponse) > 0:
+                    self.dialog = ProgressBGDialog(self.progress, self.dialog, message=self.chanName)
                     self.writer.addProgrammes(channel, cacheResponse, radio=channel['radio'], catchup=not bool(channel['radio']))
                 
         if not self.writer.save(): 
@@ -107,7 +107,7 @@ class Builder:
         self.dialog = ProgressBGDialog(100, self.dialog, message=LANGUAGE(30053))
         self.log('buildService, finished')
         if not self.myPlayer.isPlaying() and getProperty('PseudoTVRunning') == 'True': # legacy setting to disable/enable support in third-party applications. 
-            setProperty('PseudoTVRunning','True')
+            setProperty('PseudoTVRunning','False') 
         return True
 
 
@@ -117,20 +117,25 @@ class Builder:
         
 
     def verifyChannelItems(self):
-        self.log('verifyChannelItems')
         if self.channels.reset():
             items = self.channels.getAllChannels()
             for idx, item in enumerate(items):
+                self.log('verifyChannelItems, %s: %s'%(idx,item))
                 if (not item.get('name','') or not item.get('path',None) or item.get('number',0) < 1): 
                     self.log('verifyChannelItems; skipping, missing channel path and/or channel name\n%s'%(dumpJSON(item)))
                     continue
                     
                 item['label']   = (item.get('label','')   or item['name']) #legacy todo remove 'label'
                 item['id']      = (item.get('id','')      or getChannelID(item['name'], item['path'], item['number'])) # internal use only; use provided id for future xmltv pairing, else create unique Pseudo ID.
-                item['logo']    = (item.get('logo','')    or self.jsonRPC.getLogo(item['name'], item['type'], item['path'], featured=True))
-                item['radio']   = (item.get('radio','')   or (item['type'] == 'Music Genres' or 'musicdb://' in item['path']))
+                item['radio']   = (item.get('radio','')   or (item['type'] == LANGUAGE(30097) or 'musicdb://' in item['path']))
                 item['catchup'] = (item.get('catchup','') or ('vod' if not item['radio'] else ''))
                 item['url']     = 'plugin://%s/?mode=play&name=%s&id=%s&radio=%s'%(ADDON_ID,urllib.parse.quote(item['name']),urllib.parse.quote(item['id']),str(item['radio']))
+
+                logo = item.get('logo','')
+                if not logo or logo.startswith((ADDON_PATH,IMAGE_LOC,MEDIA_LOC)): #parse for missing logos when none or defaults.
+                    item['logo'] = self.jsonRPC.getLogo(item['name'], item['type'], item['path'], featured=True)
+                else: # look for new local logo else use existing
+                    item['logo'] = (self.jsonRPC.getLocalLogo(item['name'], featured=True) or logo)
 
                 if not self.grouping: 
                     item['group'] = [ADDON_NAME]
@@ -146,14 +151,10 @@ class Builder:
 
     def runActions(self, action, citem, parameter=None):
         self.log("runActions action = %s, channel = %s"%(action,citem))
-        if not citem.get('id',''): 
-            return parameter
-            
+        if not citem.get('id',''): return parameter
         chrules = citem.get('rules',[])
-        if not chrules:
-            chrules = self.channels.getChannelRules(citem)
-            
         for chrule in chrules:
+            if chrule.get('id',0) == 0: continue
             ruleInstance = chrule['action']
             if ruleInstance.actions & action > 0:
                 self.log("runActions performing channel rule: %s"%(chrule['name']))
@@ -210,7 +211,12 @@ class Builder:
                 cacheResponse = self.buildRadio(citem)
             else:         
                 cacheResponse = [self.buildFileList(citem, file, media, limit, self.sort, self.filter, self.limits) for file in path] # build multi-paths as induvial arrays for easier interleaving.
-                if not cacheResponse: 
+                
+                valid = False
+                for cr in cacheResponse:
+                    if cr: valid = True
+                    
+                if not valid:
                     self.log("getFileList, id: %s skipping channel cacheResponse empty!"%(citem['id']),xbmc.LOGINFO)
                     return False
                 
@@ -221,7 +227,7 @@ class Builder:
                     # cacheResponse.extend(list(fillList(cacheResponse,(limit-len(cacheResponse)))))
 
             cacheResponse = self.addScheduling(citem, cacheResponse)
-            # if self.fillBCTs: 
+            # if self.fillBCTs: #todo debug
                 # cacheResponse = self.injectBCTs(citem, cacheResponse)
             self.runActions(RULES_ACTION_CHANNEL_STOP, citem)
             return sorted((cacheResponse), key=lambda k: k['start'])
@@ -254,7 +260,7 @@ class Builder:
         
         
     def buildFileList(self, channel, path, media='video', limit=PAGE_LIMIT, sort={}, filter={}, limits={}):
-        self.log("buildFileList, path = %s, limit = %s, sort = %s, filter = %s, limits = %s"%(path,limit,sort,filter,limits))
+        self.log("buildFileList, id: %s, path = %s, limit = %s, sort = %s, filter = %s, limits = %s"%(channel['id'],path,limit,sort,filter,limits))
         if path.startswith('videodb://movies'): 
             if not sort: sort = {"method": "random"}
         elif path.startswith('plugin://script.embuary.helper/?info=getseasonal&amp;list={list}&limit={limit}'):
@@ -272,14 +278,18 @@ class Builder:
             fileType = item.get('filetype','file')
 
             if fileType == 'file':
-                if (file[-4].lower() == 'strm' and not self.incStrms): 
-                    self.log("buildFileList, id: %s skipping strm!"%(id),xbmc.LOGINFO)
-                    continue
-                elif not file:
+                if not file:
                     self.log("buildFileList, id: %s, IDX = %s skipping missing playable file!"%(id,idx),xbmc.LOGINFO)
                     continue
+                elif (file.lower().endswith('strm') and not self.incStrms): 
+                    self.log("buildFileList, id: %s, IDX = %s skipping strm!"%(id,idx),xbmc.LOGINFO)
+                    continue
 
-                dur = self.fileList.getDuration(file, item, self.accurateDuration)
+                if file.startswith(('plugin://','upnp://','pvr://')):
+                    accurateDuration = False
+                else: 
+                    accurateDuration = self.accurateDuration
+                dur = self.fileList.getDuration(file, item, accurateDuration)
                 if dur > 0:
                     item['duration'] = dur
                     if int(item.get("year","0")) == 1601: #default null for kodi rpc?
@@ -297,18 +307,18 @@ class Builder:
                         if not file.startswith(('plugin://','upnp://','pvr://')) and not self.incExtras and (seasonval == 0 or epval == 0) and item.get("episode",None) is not None: 
                             self.log("buildFileList, id: %s skipping extras!"%(id),xbmc.LOGINFO)
                             continue
-                            
-                        # if epval > 0: 
-                            # item["episodetitle"] = title + ' (' + str(seasonval) + 'x' + str(epval).zfill(2) + ')'
-                        # else:
+
                         label = tvtitle
                         item["tvshowtitle"]  = tvtitle
                         item["episodetitle"] = title
+                        item["episodelabel"] = '%s (%sx%s)'%(title,seasonval,str(epval).zfill(2))
                         
                     else: # This is a Movie
-                        years = int(item.get("year","0"))
-                        if years > 0: title = "%s (%s)"%(title, years)
+                        year = int(item.get("year","0"))
+                        if year > 0 and '(' not in title: 
+                            title = "%s (%s)"%(title, year)
                         item["episodetitle"] = item.get("tagline","")
+                        item["episodelabel"] = item.get("tagline","")
                         seasonval = None
                         label = title
             

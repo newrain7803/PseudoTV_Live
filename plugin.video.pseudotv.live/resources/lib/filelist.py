@@ -27,7 +27,7 @@ class Filelist:
         else: 
             self.cache = cache
             
-        self.videoParser   = VideoParser()
+        self.videoParser = VideoParser()
             
     
     def log(self, msg, level=xbmc.LOGDEBUG):
@@ -37,15 +37,18 @@ class Filelist:
     def getDuration(self, path, item={}, accurate=None):
         if accurate is None:
             accurate = getSettingBool('Parse_Duration')
+        
         self.log("getDuration; accurate = %s, path = %s"%(accurate,path))
         duration = 0
         runtime  = int(item.get('runtime','') or item.get('duration','') or '0')
+        
         if accurate == False or path.startswith(('plugin://','upnp://','pvr://')): return runtime
         elif path.startswith('stack://'): #handle "stacked" videos:
             stack = (path.replace('stack://','').replace(',,',',')).split(' , ') #todo move to regex match
             for file in stack: duration += self.parseDuration(file, item)
         else: 
             duration = self.parseDuration(path, item)
+        
         if getSettingBool('Strict_Duration') or duration > 0: 
             return duration
         return runtime 
@@ -64,9 +67,11 @@ class Filelist:
                 log("parseDuration, Failed! " + str(e), xbmc.LOGERROR)
                 duration = 0
             self.cache.set(cacheName, duration, checksum=duration, expiration=datetime.timedelta(days=28))
+        
         dbid    = item.get('id',-1)
         runtime = int(item.get('runtime','') or item.get('duration','0') or '0')
         rundiff = int(round(percentDiff(duration,runtime))) #if duration diff less don't save.
+        
         conditions = [(dbid > 0),(runtime != duration), (rundiff > 0), (rundiff <= 25),(duration > 0)]
         if getSettingBool('Store_Duration') and (False not in conditions):
             self.jsonRPC.setDuration(item['type'], dbid, duration)
@@ -78,11 +83,13 @@ class Filelist:
         cacheName = '%s.autoPagination.%s.%s'%(ADDON_ID,id,path)
         if not limits:
             msg = 'get'
+            # limits = self.channels.getPage(id) #todo move page to channels.json
             limits = (self.cache.get(cacheName) or {"end": 0, "start": 0, "total": 0})
         else:
             msg = 'set'
+            # self.channels.setPage(id, limits) #todo move page to channels.json
             self.cache.set(cacheName, limits, checksum=len(limits), expiration=datetime.timedelta(days=28))
-        self.log("%s autoPagination, path = %s, limits = %s"%(msg,path,limits))
+        self.log("%s autoPagination, id = %s, path = %s, limits = %s"%(msg,id,path,limits))
         return limits
 
         
@@ -98,7 +105,7 @@ class Filelist:
         if sort:   params['sort']   = sort
         if filter: params['filter'] = filter
         
-        self.log('requestList, path = %s, params = %s, page = %s'%(path,params,page))
+        self.log('requestList, id = %s, path = %s, params = %s, page = %s'%(id,path,params,page))
         json_response = self.jsonRPC.getDirectory(dumpJSON(params))
         if 'filedetails' in json_response: 
             key = 'filedetails'
@@ -108,16 +115,16 @@ class Filelist:
         results = json_response.get('result',{})
         items   = results.get(key,[])
         limits  = results.get('limits',params['limits'])
-        self.log('requestList, response items = %s, key = %s, limits = %s'%(len(items),key,limits))
+        self.log('requestList, id = %s, response items = %s, key = %s, limits = %s'%(id,len(items),key,limits))
         
         if limits.get('end',0) >= limits.get('total',0): # restart page, exceeding boundaries.
-            self.log('requestList resetting page to 0')
+            self.log('requestList, id = %s, resetting page to 0'%(id))
             limits = {"end": 0, "start": 0, "total": 0}
         self.autoPagination(id, path, limits)
         
         if len(items) == 0 and limits.get('start',0) > 0 and limits.get('total',0) > 0:
-            self.log("requestList, trying again at start page 0")
+            self.log("requestList, id = %s, trying again at start page 0"%(id))
             return self.requestList(id, path, media, page, sort, filter, limits)
         
-        self.log("requestList return, items size = %s"%len(items))
+        self.log("requestList, id = %s, return items = %s"%(id,len(items)))
         return items

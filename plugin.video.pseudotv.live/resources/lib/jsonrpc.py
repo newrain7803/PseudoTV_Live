@@ -42,14 +42,9 @@ class JSONRPC:
         self.fileList.jsonRPC = self
         
         self.resourcePacks = self.buildLogoResources()
-        self.processThread = threading.Timer(30.0, self.myProcess.start)
-        
-        if not FileAccess.exists(LOGO_LOC):
-            FileAccess.makedirs(LOGO_LOC)
-        if not FileAccess.exists(CACHE_LOC):
-            FileAccess.makedirs(CACHE_LOC)
-        
-        
+        self.processThread = threading.Timer(15.0, self.myProcess.start)
+
+
     def log(self, msg, level=xbmc.LOGDEBUG):
         return log('%s: %s'%(self.__class__.__name__,msg),level)
     
@@ -76,8 +71,12 @@ class JSONRPC:
     def getActivePlayer(self, return_item=False):
         json_query = ('{"jsonrpc":"2.0","method":"Player.GetActivePlayers","params":{},"id":1}')
         json_response = (sendJSON(json_query))
-        item = json_response.get('result',[{}])[0]
-        id = item.get('playerid',1)
+        item = json_response.get('result',[])
+        if item: 
+            id = item[0].get('playerid',1)
+        else: 
+            self.log("getActivePlayer, Failed! no results")
+            id = 1 #guess
         self.log("getActivePlayer, id = %s"%(id))
         if return_item: return item
         return id
@@ -113,14 +112,14 @@ class JSONRPC:
         else:     return sendJSON(json_query).get('result',{}).get('songs',[])
 
 
-    def getTVshows(self, params='{"properties":["studio","genre","art","mpaa","file"]}', cache=True):
+    def getTVshows(self, params='{"properties":["title","genre","year","studio","art","file"]}', cache=True):
         json_query = ('{"jsonrpc":"2.0","method":"VideoLibrary.GetTVShows","params":%s,"id":1}'%(params))
         if cache: return (self.cacheJSON(json_query)).get('result',{}).get('tvshows',[])
         else:     return sendJSON(json_query).get('result',{}).get('tvshows',[])
         
         
-    def getMovies(self, params='{"properties":["studio","genre","art","mpaa","file"]}', cache=True):
-        json_query = ('{"jsonrpc": "2.0", "method": "VideoLibrary.GetMovies", "params":%s, "id": 1}'%(params))
+    def getMovies(self, params='{"properties":["title","genre","year","studio","art","file"]}', cache=True):
+        json_query = ('{"jsonrpc":"2.0","method":"VideoLibrary.GetMovies","params":%s,"id":1}'%(params))
         if cache: return (self.cacheJSON(json_query)).get('result',{}).get('movies',[])
         else:     return sendJSON(json_query).get('result',{}).get('movies',[])
 
@@ -183,11 +182,11 @@ class JSONRPC:
                      "resource://resource.images.studios.coloured/"]
                      
         if USE_COLOR: studios.reverse()
-        [logos.append({'type':['Music Genres'],'path':radio,'files': self.getResourcesFolders(radio, self.getPluginMeta(radio).get('version',''))[1]}) for radio in radios]
-        [logos.append({'type':['TV Genres','Movie Genres','Mixed Genres','Custom'],'path':genre,'files': self.getResourcesFolders(genre, self.getPluginMeta(genre).get('version',''))[1]}) for genre  in genres]
-        [logos.append({'type':['TV Networks','Movie Studios','Custom'],'path':studio,'files': self.getResourcesFolders(studio, self.getPluginMeta(studio).get('version',''))[1]}) for studio in studios]
-        logos.append( {'type':['TV Shows','Custom'],'path':'','files': self.getTVshows()})
-        logos.append( {'type':['Recommended','IPTV','Custom'],'path':'','files': self.getAddons()})
+        [logos.append({'type':[LANGUAGE(30097)],'path':radio,'files': self.getResourcesFolders(radio, self.getPluginMeta(radio).get('version',''))[1]}) for radio in radios]
+        [logos.append({'type':[LANGUAGE(30004),LANGUAGE(30005),LANGUAGE(30006),'Custom'],'path':genre,'files': self.getResourcesFolders(genre, self.getPluginMeta(genre).get('version',''))[1]}) for genre  in genres]
+        [logos.append({'type':[LANGUAGE(30002),LANGUAGE(30007),'Custom'],'path':studio,'files': self.getResourcesFolders(studio, self.getPluginMeta(studio).get('version',''))[1]}) for studio in studios]
+        logos.append( {'type':[LANGUAGE(30003),'Custom'],'path':'','files': self.getTVshows()})
+        logos.append( {'type':[LANGUAGE(30026),LANGUAGE(30033),'Custom'],'path':'','files': self.getAddons()})
         self.log('buildLogoResources return')
         return logos
 
@@ -236,17 +235,22 @@ class JSONRPC:
         return logo
         
         
-    def getLogo(self, channelname, type='Custom', path=None, featured=False):
-        log('getLogo: channelname = %s, type = %s'%(channelname,type))
+    def getLocalLogo(self, channelname, featured):
         localIcon = os.path.join(IMAGE_LOC,'%s.png'%(channelname))
         userIcon  = os.path.join(LOGO_LOC ,'%s.png'%(channelname))
         if FileAccess.exists(userIcon): # check user folder
-            log('getLogo: using user logo = %s'%(userIcon))
+            log('getLocalLogo: using user logo = %s'%(userIcon))
             return self.prepareImage(channelname,userIcon,featured)
         elif FileAccess.exists(localIcon): # check plugin folder
-            log('getLogo: using local logo = %s'%(localIcon))
+            log('getLocalLogo: using local logo = %s'%(localIcon))
             return self.prepareImage(channelname,localIcon,featured)
-            
+        return None
+        
+        
+    def getLogo(self, channelname, type='Custom', path=None, featured=False):
+        log('getLogo: channelname = %s, type = %s'%(channelname,type))
+        local = self.getLocalLogo(channelname, featured)
+        if local: return local
         icon = self.findLogo(channelname, type, USE_COLOR, ADDON_VERSION)
         if not icon:
             if isinstance(path, list) and len(path) > 0: 
@@ -268,7 +272,7 @@ class JSONRPC:
         liz.setProperty('totaltime'  , str(dur))
         liz.setProperty('resumetime' , str(progress))
         liz.setProperty('startoffset', str(progress))
-        liz.setProperty("IsPlayable" ,"true")
+        liz.setProperty("IsPlayable" , "true")
         if self.myPlayer.isPlaying(): return True #todo prompt to stop playback and test.
         self.myPlayer.play(file,liz,windowed=True)
         while not self.myMonitor.abortRequested():
